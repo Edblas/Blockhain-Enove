@@ -10,6 +10,7 @@ import pyperclip
 import threading
 import socket
 import json
+import os
 
 class Block:
     """Classe que representa um bloco na blockchain."""
@@ -42,12 +43,15 @@ class Blockchain:
         self.key_vault = KeyVault()
         self.miner_saldos = {}
         self.reward = 25  # Recompensa inicial de 25 moedas
-        self.create_genesis_block()
+        self.load_data()  # Carrega dados persistentes
+        if not self.blocks:
+            self.create_genesis_block()
 
     def create_genesis_block(self):
         """Cria o bloco gênese e o adiciona à blockchain."""
         genesis_block = Block(0, "0", time.time(), "Bloco Gênese", 0, "0", "Genesis")
         self.blocks.append(genesis_block)
+        self.save_data()  # Salva os dados após criar o bloco gênese
 
     def calculate_hash(self, index, previous_hash, timestamp, data, nonce):
         """Calcula o hash de um bloco."""
@@ -57,6 +61,8 @@ class Blockchain:
     def add_block(self, new_block):
         """Adiciona um bloco à blockchain após validação."""
         self.blocks.append(new_block)
+        self.update_balance(new_block.miner)  # Atualiza o saldo do minerador
+        self.save_data()  # Salva os dados após adicionar um novo bloco
 
     def sign_message(self, private_key, message):
         """Assina uma mensagem com a chave privada."""
@@ -83,25 +89,53 @@ class Blockchain:
         halving_interval = 210_000  # A cada 210.000 blocos
         return self.reward if (len(self.blocks) // halving_interval) % 2 == 0 else self.reward // 2
 
+    def save_data(self):
+        """Salva a blockchain e o key vault em um arquivo JSON."""
+        data = {
+            'blocks': [block.__dict__ for block in self.blocks],
+            'keys': self.key_vault.keys,
+            'miner_saldos': self.miner_saldos
+        }
+        with open('blockchain_data.json', 'w') as f:
+            json.dump(data, f)
+
+    def load_data(self):
+        """Carrega dados persistentes da blockchain a partir de um arquivo."""
+        try:
+            with open('blockchain_data.json', 'r') as f:
+                data = json.load(f)
+                self.blocks = [Block(**block) for block in data.get('blocks', [])]
+                self.key_vault.keys = data.get('keys', {})
+                self.miner_saldos = data.get('miner_saldos', {})
+        except FileNotFoundError:
+            self.blocks = []  # Inicializa uma blockchain vazia
+        except json.JSONDecodeError:
+            self.blocks = []  # Se o JSON estiver malformado
+
+    def update_balance(self, miner_address):
+        """Atualiza o saldo do minerador com base nas recompensas recebidas."""
+        if miner_address not in self.miner_saldos:
+            self.miner_saldos[miner_address] = 0
+        self.miner_saldos[miner_address] += self.get_reward()
+
 class BlockchainApp:
     """Classe que representa a interface do aplicativo de blockchain."""
     def __init__(self):
         self.blockchain = Blockchain()
         self.miner_address = ""
         self.is_mining = False
-        self.public_key_hex = None
-        self.private_key_hex = None
         self.window = tk.Tk()
         self.window.title("Enove Blockchain")
-        self.window.geometry("600x600") 
+        self.window.geometry("600x600")
 
+        # Labels e botões da interface
         tk.Label(self.window, text="Endereço do Minerador:").pack(pady=5)
         self.miner_address_label = tk.Label(self.window, text=self.miner_address)
         self.miner_address_label.pack(pady=5)
 
         tk.Button(self.window, text="Definir Endereço do Minerador", command=self.set_miner_address).pack(pady=5)
         tk.Button(self.window, text="Iniciar Mineração P2P", command=self.start_mining_p2p).pack(pady=5)
-        tk.Button(self.window, text="Parar Mineração", command=self.stop_mining).pack(pady=5)  # Botão para parar a mineração
+        tk.Button(self.window, text="Parar Mineração", command=self.stop_mining).pack(pady=5)
         tk.Button(self.window, text="Criar Carteira", command=self.create_wallet).pack(pady=5)
         tk.Button(self.window, text="Ver Saldo", command=self.view_balance).pack(pady=5)
         tk.Button(self.window, text="Ver Blockchain", command=self.view_blockchain).pack(pady=5)
@@ -154,7 +188,6 @@ class BlockchainApp:
         """Processa um novo bloco recebido de outro nó.""" 
         block = Block(**block_data)
         self.blockchain.add_block(block)
-        self.update_balance(block.miner)
 
     def start_mining_p2p(self):
         """Inicia a mineração em modo P2P.""" 
@@ -172,109 +205,66 @@ class BlockchainApp:
         mining_thread = threading.Thread(target=self.mine)  # Inicia a mineração em uma thread separada
         mining_thread.start()
 
+    def mine(self):
+        """Função de mineração que cria novos blocos.""" 
+        while self.is_mining:
+            last_block = self.blockchain.blocks[-1]
+            index = last_block.index + 1
+            timestamp = time.time()
+            data = f"Minerando em {self.miner_address}"
+            nonce = 0
+            hash_result = self.blockchain.calculate_hash(index, last_block.hash, timestamp, data, nonce)
+            while not hash_result.startswith("0000"):  # Dificuldade do hash
+                nonce += 1
+                hash_result = self.blockchain.calculate_hash(index, last_block.hash, timestamp, data, nonce)
+
+            new_block = Block(index, last_block.hash, timestamp, data, nonce, hash_result, self.miner_address)
+            self.blockchain.add_block(new_block)  # Adiciona o novo bloco à blockchain
+            self.broadcast_new_block(new_block)  # Envia o novo bloco para a rede P2P
+            time.sleep(10)  # Simula o tempo entre os blocos (pode ser ajustado)
+
+    def broadcast_new_block(self, new_block):
+        """Envia um novo bloco para todos os nós na rede P2P.""" 
+        block_data = json.dumps({'type': 'new_block', 'block': new_block.__dict__}).encode()
+        # Aqui você precisará implementar a lógica para enviar o bloco para todos os nós conectados
+
     def stop_mining(self):
-        """Interrompe o processo de mineração.""" 
+        """Para o processo de mineração.""" 
         self.is_mining = False
         self.mining_status_label.config(text="Status: Mineração parada.")
 
-    def mine(self):
-        """Função de mineração que cria blocos continuamente.""" 
-        while self.is_mining:
-            last_block = self.blockchain.blocks[-1] if self.blockchain.blocks else self.blockchain.create_genesis_block()
-            index = last_block.index + 1
-            previous_hash = last_block.hash
-            timestamp = time.time()
-            data = f"Bloco minerado por {self.miner_address}"
-            nonce = 0
-            hash_value = self.blockchain.calculate_hash(index, previous_hash, timestamp, data, nonce)
-
-            # Aumentar a dificuldade de mineração exigindo um hash que começa com mais zeros
-            while hash_value[:6] != "000000":  # Exemplo: dificuldade de 6 zeros
-                nonce += 1
-                hash_value = self.blockchain.calculate_hash(index, previous_hash, timestamp, data, nonce)
-
-            # Adiciona a recompensa ao minerador
-            self.blockchain.miner_saldos[self.miner_address] = self.blockchain.miner_saldos.get(self.miner_address, 0) + self.blockchain.get_reward()
-
-            new_block = Block(index, previous_hash, timestamp, data, nonce, hash_value, self.miner_address)  # Adiciona miner
-
-            # Assina o bloco antes de enviar
-            private_key = self.blockchain.key_vault.retrieve_key(self.miner_address)
-            signature = self.blockchain.sign_message(private_key, hash_value)
-
-            # Enviar o bloco para a rede P2P
-            self.send_block_to_peers(new_block)
-
-            # Adiciona o bloco à blockchain local
-            self.blockchain.add_block(new_block)
-            self.mining_status_label.config(text=f"Status: Bloco {index} minerado.")
-
-    def send_block_to_peers(self, new_block):
-        """Envia o novo bloco para os nós conectados na rede P2P.""" 
-        block_data = new_block.__dict__
-        message = json.dumps({"type": "new_block", "block": block_data})
-        # Envia o bloco para todos os peers (apenas um exemplo básico, a implementação deve ser expandida)
-        for peer in self.get_peers():
-            try:
-                client_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-                client_socket.connect(peer)
-                client_socket.send(message.encode())
-                client_socket.close()
-            except Exception as e:
-                print(f"Erro ao enviar bloco para {peer}: {e}")
-
-    def get_peers(self):
-        """Retorna uma lista de peers conectados (apenas para fins de exemplo)."""
-        # Aqui você pode implementar a lógica para gerenciar e retornar a lista de peers
-        return []
-
-    def view_blockchain(self):
-        """Exibe a blockchain em uma caixa de texto rolável.""" 
-        blockchain_info = self.blockchain.get_chain_info()
-        text_box = scrolledtext.ScrolledText(self.window, width=70, height=20)
-        text_box.insert(tk.INSERT, blockchain_info)
-        text_box.pack(pady=5)
-        text_box.config(state=tk.DISABLED)
-
     def create_wallet(self):
-        """Cria uma nova carteira (chave pública e privada).""" 
-        private_key = ecdsa.SigningKey.generate()  # Gera a chave privada
-        public_key = private_key.get_verifying_key()  # Obtém a chave pública
-
-        # Armazena as chaves como strings hexadecimais
-        self.private_key_hex = private_key.to_string().hex()
-        self.public_key_hex = public_key.to_string().hex()
-
-        # Armazena as chaves no key vault
-        self.blockchain.key_vault.store_key(self.public_key_hex, self.private_key_hex)
-        
-        # Copia as chaves para a área de transferência
-        pyperclip.copy(f"Chave pública: {self.public_key_hex}\nChave privada: {self.private_key_hex}") 
-
-        # Exibe as chaves em uma mensagem
-        messagebox.showinfo("Nova Carteira", f"Chave pública e privada foram copiadas:\n\nChave pública:\n{self.public_key_hex}\n\nChave privada:\n{self.private_key_hex}")
-
-        # Imprime as chaves no console
-        print(f"Chave pública: {self.public_key_hex}")
-        print(f"Chave privada: {self.private_key_hex}")
-    
-    def verify_signature(self, message, signature, public_key_hex):
-        """Verifica uma assinatura usando a chave pública."""
-        public_key = ecdsa.VerifyingKey.from_string(bytes.fromhex(public_key_hex))
-        return public_key.verify(signature, message)
+        """Cria uma nova carteira e exibe a chave pública e privada.""" 
+        private_key = os.urandom(32).hex()
+        public_key = hashlib.sha256(private_key.encode()).hexdigest()  # Simples chave pública
+        self.blockchain.key_vault.store_key(public_key, private_key)  # Armazena as chaves
+        messagebox.showinfo("Carteira Criada", f"Chave Pública: {public_key}\nChave Privada: {private_key}")
+        pyperclip.copy(f"Chave Pública: {public_key}\nChave Privada: {private_key}")
 
     def view_balance(self):
         """Exibe o saldo do minerador.""" 
-        if self.miner_address:
-            balance = self.blockchain.miner_saldos.get(self.miner_address, 0)
-            messagebox.showinfo("Saldo", f"O saldo do minerador {self.miner_address} é: {balance} moedas.")
-        else:
+        if not self.miner_address:
             messagebox.showerror("Erro", "Nenhum endereço de minerador definido.")
+            return
 
+        balance = self.blockchain.miner_saldos.get(self.miner_address, 0)
+        messagebox.showinfo("Saldo", f"Saldo do Minerador: {balance} moedas")
+
+    def view_blockchain(self):
+        """Exibe a blockchain em uma janela de texto rolável.""" 
+        blockchain_info = self.blockchain.get_chain_info()
+        viewer = tk.Toplevel(self.window)
+        viewer.title("Blockchain")
+        text_area = scrolledtext.ScrolledText(viewer, width=80, height=30)
+        text_area.insert(tk.INSERT, blockchain_info)
+        text_area.config(state=tk.DISABLED)  # Desabilita edição
+        text_area.pack()
+        
     def run(self):
-        """Inicia a interface gráfica do aplicativo.""" 
+        """Executa a interface do aplicativo."""
         self.window.mainloop()
 
 if __name__ == "__main__":
     app = BlockchainApp()
     app.run()
+
